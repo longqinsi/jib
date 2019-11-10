@@ -245,35 +245,35 @@ public class BuildConfigurationTest {
     }
   }
 
-  @Test
-  public void testBuilder_digestWarning() throws IOException, InvalidImageReferenceException {
-    EventHandlers mockEventHandlers = Mockito.mock(EventHandlers.class);
-    BuildConfiguration.Builder builder =
-        BuildConfiguration.builder()
-            .setEventHandlers(mockEventHandlers)
-            .setTargetImageConfiguration(
-                ImageConfiguration.builder(Mockito.mock(ImageReference.class)).build())
-            .setBaseImageLayersCacheDirectory(Paths.get("ignored"))
-            .setApplicationLayersCacheDirectory(Paths.get("ignored"));
-
-    builder
-        .setBaseImageConfiguration(
-            ImageConfiguration.builder(
-                    ImageReference.parse(
-                        "image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
-                .build())
-        .build();
-    Mockito.verify(mockEventHandlers, Mockito.never()).dispatch(LogEvent.warn(Mockito.anyString()));
-
-    builder
-        .setBaseImageConfiguration(
-            ImageConfiguration.builder(ImageReference.parse("image:tag")).build())
-        .build();
-    Mockito.verify(mockEventHandlers)
-        .dispatch(
-            LogEvent.warn(
-                "Base image 'image:tag' does not use a specific image digest - build may not be reproducible"));
-  }
+  // @Test
+  // public void testBuilder_digestWarning() throws IOException, InvalidImageReferenceException {
+  //   EventHandlers mockEventHandlers = Mockito.mock(EventHandlers.class);
+  //   BuildConfiguration.Builder builder =
+  //       BuildConfiguration.builder()
+  //           .setEventHandlers(mockEventHandlers)
+  //           .setTargetImageConfiguration(
+  //               ImageConfiguration.builder(Mockito.mock(ImageReference.class)).build())
+  //           .setBaseImageLayersCacheDirectory(Paths.get("ignored"))
+  //           .setApplicationLayersCacheDirectory(Paths.get("ignored"));
+  //
+  //   builder
+  //       .setBaseImageConfiguration(
+  //           ImageConfiguration.builder(
+  //                   ImageReference.parse(
+  //                       "image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
+  //               .build())
+  //       .build();
+  //   Mockito.verify(mockEventHandlers, Mockito.never()).dispatch(LogEvent.warn(Mockito.anyString()));
+  //
+  //   builder
+  //       .setBaseImageConfiguration(
+  //           ImageConfiguration.builder(ImageReference.parse("image:tag")).build())
+  //       .build();
+  //   Mockito.verify(mockEventHandlers)
+  //       .dispatch(
+  //           LogEvent.warn(
+  //               "Base image 'image:tag' does not use a specific image digest - build may not be reproducible"));
+  // }
 
   @Test
   public void testClose_shutDownInternalExecutorService() throws IOException {

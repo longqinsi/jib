@@ -267,11 +267,11 @@ public class BuildConfiguration implements Closeable {
           Preconditions.checkNotNull(baseImageConfiguration);
           if (!baseImageConfiguration.getImage().isTagDigest()
               && !baseImageConfiguration.getImage().isScratch()) {
-            eventHandlers.dispatch(
-                LogEvent.warn(
-                    "Base image '"
-                        + baseImageConfiguration.getImage()
-                        + "' does not use a specific image digest - build may not be reproducible"));
+            // eventHandlers.dispatch(
+            //     LogEvent.warn(
+            //         "Base image '"
+            //             + baseImageConfiguration.getImage()
+            //             + "' does not use a specific image digest - build may not be reproducible"));
           }
 
           return new BuildConfiguration(

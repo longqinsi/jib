@@ -243,10 +243,10 @@ public class PluginConfigurationProcessor {
     JibSystemProperties.checkProxyPortProperty();
 
     if (JibSystemProperties.sendCredentialsOverHttp()) {
-      projectProperties.log(
-          LogEvent.warn(
-              "Authentication over HTTP is enabled. It is strongly recommended that you do not "
-                  + "enable this on a public network!"));
+      // projectProperties.log(
+      //     LogEvent.warn(
+      //         "Authentication over HTTP is enabled. It is strongly recommended that you do not "
+      //             + "enable this on a public network!"));
     }
 
     configureContainerizer(containerizer, rawConfiguration, projectProperties);

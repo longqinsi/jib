@@ -38,18 +38,23 @@ import com.google.cloud.tools.jib.plugins.common.logging.ProgressDisplayGenerato
 import com.google.cloud.tools.jib.plugins.common.logging.SingleThreadedExecutor;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
+
+import java.io.DataInputStream;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import javax.annotation.Nullable;
+
+import org.apache.commons.io.FileUtils;
+import org.apache.commons.io.IOUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.execution.MavenSession;
 import org.apache.maven.model.Build;
@@ -75,6 +80,14 @@ public class MavenProjectProperties implements ProjectProperties {
   private static final String JAR_PLUGIN_NAME = "'maven-jar-plugin'";
 
   private static final Duration LOGGING_THREAD_SHUTDOWN_TIMEOUT = Duration.ofSeconds(1);
+
+  private final Path jibDirPath = Paths.get(System.getProperty("user.home"), ".jib");
+
+  private final Path dependencyLogDirPath = jibDirPath.resolve("dependencies");
+
+  private static final String BASE_LIBRARY_MAVEN_ID_PROPERTY_NAME = "base-library-maven-id";
+
+  private final static ClassLoader classLoader = MavenProjectProperties.class.getClassLoader();
 
   /**
    * @param project the {@link MavenProject} for the plugin.
@@ -208,6 +221,22 @@ public class MavenProjectProperties implements ProjectProperties {
         return JavaContainerBuilderHelper.fromExplodedWar(javaContainerBuilder, explodedWarPath);
       }
 
+      // 从基库的日志文件中加载基库的依赖列表，以便在生成镜像时排除这些依赖库
+      if(!Files.exists(dependencyLogDirPath)) {
+        Files.createDirectories(dependencyLogDirPath);
+        Files.setAttribute(dependencyLogDirPath, "dos:hidden", true);
+      }
+
+      final String baseLibraryMavenId = project.getProperties().getProperty(BASE_LIBRARY_MAVEN_ID_PROPERTY_NAME);
+      final Map<String, String> baseLibraryDependencies = !Objects.isNull(baseLibraryMavenId) && !baseLibraryMavenId.isEmpty() && Files.exists(dependencyLogDirPath.resolve(baseLibraryMavenId)) ?
+              Files.readAllLines(dependencyLogDirPath.resolve(baseLibraryMavenId))
+                      .stream()
+                      .filter(line -> !Objects.isNull(line) && !line.isEmpty())
+                      .map(line -> StringUtils.split(line, ","))
+                      .collect(Collectors.toMap(items -> items[0], items -> items[1]))
+              :
+              new HashMap<>();
+
       switch (containerizingMode) {
         case EXPLODED:
           // Add resources, and classes
@@ -228,15 +257,65 @@ public class MavenProjectProperties implements ProjectProperties {
           throw new IllegalStateException("unknown containerizing mode: " + containerizingMode);
       }
 
-      // Classify and add dependencies
+      Function<Artifact, String> getArtifactFullId =
+              artifact -> artifact.getGroupId() + ":" + artifact.getArtifactId() + ":" + artifact.getVersion();
+
+      // 把本工程的依赖写入日志文件（格式：groupId:artifactId:version,jar包文件名)
+      final String projectIdFileName = project.getGroupId() + "_" + project.getArtifactId() + "_" + project.getVersion();
+      final Path dependencyLogPath = dependencyLogDirPath.resolve(projectIdFileName);
+
+      final List<Artifact> projectArtifactsIncludesSelf = new ArrayList<>(project.getArtifacts());
+      projectArtifactsIncludesSelf.add(project.getArtifact());
+
+      final List<String> dependenciesToLog = new ArrayList<>();
+      for(Artifact artifact: projectArtifactsIncludesSelf){
+        if(artifact == project.getArtifact() || Artifact.SCOPE_COMPILE_PLUS_RUNTIME.contains(artifact.getScope())){
+          dependenciesToLog.add(getArtifactFullId.apply(artifact) + "," + artifact.getFile().getName());
+        }
+      }
+      dependenciesToLog.sort(String::compareTo);
+      Files.write(dependencyLogPath, dependenciesToLog);
+
+      // 不把基库已经包含的依赖写入docker镜像中
+      final Set<Artifact> resolvedDependencyExcludeThoseFromBaseLibrary = project.getArtifacts()
+              .stream()
+              .filter(artifact -> !baseLibraryDependencies.containsKey(getArtifactFullId.apply(artifact)))
+              .collect(Collectors.toSet());
+
       Map<LayerType, List<Path>> classifiedDependencies =
-          classifyDependencies(
-              project.getArtifacts(),
-              session
-                  .getProjects()
-                  .stream()
-                  .map(MavenProject::getArtifact)
-                  .collect(Collectors.toSet()));
+              classifyDependencies(
+                      resolvedDependencyExcludeThoseFromBaseLibrary,
+                      session.getProjects()
+                              .stream()
+                              .map(MavenProject::getArtifact)
+                              .collect(Collectors.toSet()));
+
+      // 找出基库中有，但本工程中没有的依赖包（这些依赖包是被本工程直接依赖的Jar包或其传递依赖屏蔽了），
+      // 在生成的镜像中用空包屏蔽这些依赖包
+      final Set<String> projectDependencyFullIds = project.getArtifacts()
+              .stream()
+              .filter(artifact -> Artifact.SCOPE_COMPILE_PLUS_RUNTIME.contains(artifact.getScope()) || Artifact.SCOPE_PROVIDED.equals(artifact.getScope()))
+              .map(getArtifactFullId)
+              .collect(Collectors.toSet());
+      final List<String> shieldedBaseDependencyJars = baseLibraryDependencies.keySet()
+              .stream()
+              .filter(artifactFullId -> !projectDependencyFullIds.contains(artifactFullId))
+              .map(baseLibraryDependencies::get)
+              .collect(Collectors.toList());
+      if (!shieldedBaseDependencyJars.isEmpty()) {
+        // 空白jar包，用于屏蔽基库中的与本级的直接依赖冲突的包
+        final byte[] emptyJarBytes = IOUtils.toByteArray(classLoader.getResourceAsStream("empty.jar"));
+        final Path emptyJarsDirPath = jibDirPath.resolve("emptyJars");
+        final Path tempDir = emptyJarsDirPath.resolve(projectIdFileName);
+        FileUtils.deleteDirectory(tempDir.toFile());
+        Files.createDirectories(tempDir);
+        for (String shieldedBaseDependencyJar : shieldedBaseDependencyJars) {
+          final Path emptyJarPath = tempDir.resolve(shieldedBaseDependencyJar);
+          Files.write(emptyJarPath, emptyJarBytes);
+          Preconditions.checkNotNull(classifiedDependencies.get(LayerType.DEPENDENCIES))
+                  .add(emptyJarPath);
+        }
+      }
 
       return javaContainerBuilder
           .addDependencies(
